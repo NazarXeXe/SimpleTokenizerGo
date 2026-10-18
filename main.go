@@ -6,7 +6,6 @@ import (
 	"io"
 	"os"
 	"strconv"
-	"strings"
 
 	"github.com/alexflint/go-arg"
 )
@@ -22,35 +21,41 @@ type Token struct {
 	Pos   int
 }
 
-func tokenType(raw string) string {
-	i := 0
-	// Optional sign.
-	if i < len(raw) && (raw[i] == '+' || raw[i] == '-') {
+func isDigit(c byte) bool { return c >= '0' && c <= '9' }
+func isLetter(c byte) bool {
+	return c == '_' || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
+}
+
+func scanNumber(s string, pos int) (int, bool) {
+	i := pos
+	if i < len(s) && (s[i] == '+' || s[i] == '-') {
 		i++
 	}
 	intDigits := 0
-	for i < len(raw) && raw[i] >= '0' && raw[i] <= '9' {
+	for i < len(s) && isDigit(s[i]) {
 		i++
 		intDigits++
 	}
 	fracDigits := 0
-	isFloat := false
-	if i < len(raw) && raw[i] == '.' {
-		isFloat = true
-		i++
-		for i < len(raw) && raw[i] >= '0' && raw[i] <= '9' {
+	if i < len(s) && s[i] == '.' {
+		// Treat as a decimal point only if followed by a digit (".5", "3.14")
+		// or if there are already integer digits (trailing dot "5.").
+		if (i+1 < len(s) && isDigit(s[i+1])) || intDigits > 0 {
 			i++
-			fracDigits++
+			for i < len(s) && isDigit(s[i]) {
+				i++
+				fracDigits++
+			}
 		}
 	}
-
-	if i != len(raw) || (intDigits+fracDigits) == 0 {
-		return "word"
+	if intDigits+fracDigits == 0 {
+		return 0, false
 	}
-	if isFloat {
-		return "float"
+	// Glued to a following identifier char -> not a standalone number.
+	if i < len(s) && isLetter(s[i]) {
+		return 0, false
 	}
-	return "int"
+	return i - pos, true
 }
 
 type Text string
@@ -58,19 +63,50 @@ type Text string
 func (s Text) tokenize() []Token {
 	raw := string(s)
 	var tokens []Token
-	pos := 0
-	for i := 0; i < len(raw); {
-		if raw[i] == ' ' || raw[i] == '	' || raw[i] == '\n' || raw[i] == '\r' {
+	i := 0
+	for i < len(raw) {
+		c := raw[i]
+		switch {
+		case c == ' ' || c == '	' || c == '\n' || c == '\r':
 			i++
-			pos++
-			continue
-		}
-		start := i
-		for i < len(raw) && raw[i] != ' ' && raw[i] != '	' && raw[i] != '\n' && raw[i] != '\r' {
+		case isLetter(c):
+			// Word: letters, digits, and dots (so "2.5x", "1e3", "a.b" group).
+			start := i
+			for i < len(raw) && (isLetter(raw[i]) || isDigit(raw[i]) || raw[i] == '.') {
+				i++
+			}
+			tokens = append(tokens, Token{Type: "word", Value: raw[start:i], Pos: start})
+		case isDigit(c) || ((c == '+' || c == '-') && i+1 < len(raw) && (isDigit(raw[i+1]) || raw[i+1] == '.')) ||
+			(c == '.' && i+1 < len(raw) && isDigit(raw[i+1])):
+			// Number (possibly signed or leading-dot).
+			n, ok := scanNumber(raw, i)
+			if ok {
+				typ := "int"
+				for j := i; j < i+n; j++ {
+					if raw[j] == '.' {
+						typ = "float"
+						break
+					}
+				}
+				tokens = append(tokens, Token{Type: typ, Value: raw[i : i+n], Pos: i})
+				i += n
+			} else if isDigit(c) {
+				// Digit-led run that is not a standalone number (glued to a letter, e.g. "2.5x" / "1e3") -> treat as a word.
+				start := i
+				for i < len(raw) && (isLetter(raw[i]) || isDigit(raw[i]) || raw[i] == '.') {
+					i++
+				}
+				tokens = append(tokens, Token{Type: "word", Value: raw[start:i], Pos: start})
+			} else {
+				// Sign or dot alone (no number follows) -> a symbol.
+				tokens = append(tokens, Token{Type: "symbol", Value: string(c), Pos: i})
+				i++
+			}
+		default:
+			// Every other character is a special symbol on its own.
+			tokens = append(tokens, Token{Type: "symbol", Value: string(c), Pos: i})
 			i++
 		}
-		tokens = append(tokens, Token{Type: tokenType(raw[start:i]), Value: strings.TrimSpace(raw[start:i]), Pos: pos})
-		pos += i - start
 	}
 	return tokens
 }
