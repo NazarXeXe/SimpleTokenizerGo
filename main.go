@@ -1,9 +1,11 @@
 package main
 
 import (
+	"encoding/csv"
 	"fmt"
 	"io"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/alexflint/go-arg"
@@ -20,20 +22,54 @@ type Token struct {
 	Pos   int
 }
 
-func tokenize(s string) []Token {
+func tokenType(raw string) string {
+	i := 0
+	// Optional sign.
+	if i < len(raw) && (raw[i] == '+' || raw[i] == '-') {
+		i++
+	}
+	intDigits := 0
+	for i < len(raw) && raw[i] >= '0' && raw[i] <= '9' {
+		i++
+		intDigits++
+	}
+	fracDigits := 0
+	isFloat := false
+	if i < len(raw) && raw[i] == '.' {
+		isFloat = true
+		i++
+		for i < len(raw) && raw[i] >= '0' && raw[i] <= '9' {
+			i++
+			fracDigits++
+		}
+	}
+
+	if i != len(raw) || (intDigits+fracDigits) == 0 {
+		return "word"
+	}
+	if isFloat {
+		return "float"
+	}
+	return "int"
+}
+
+type Text string
+
+func (s Text) tokenize() []Token {
+	raw := string(s)
 	var tokens []Token
 	pos := 0
-	for i := 0; i < len(s); {
-		if s[i] == ' ' || s[i] == '\t' || s[i] == '\n' || s[i] == '\r' {
+	for i := 0; i < len(raw); {
+		if raw[i] == ' ' || raw[i] == '	' || raw[i] == '\n' || raw[i] == '\r' {
 			i++
 			pos++
 			continue
 		}
 		start := i
-		for i < len(s) && s[i] != ' ' && s[i] != '\t' && s[i] != '\n' && s[i] != '\r' {
+		for i < len(raw) && raw[i] != ' ' && raw[i] != '	' && raw[i] != '\n' && raw[i] != '\r' {
 			i++
 		}
-		tokens = append(tokens, Token{Type: "word", Value: strings.TrimSpace(s[start:i]), Pos: pos})
+		tokens = append(tokens, Token{Type: tokenType(raw[start:i]), Value: strings.TrimSpace(raw[start:i]), Pos: pos})
 		pos += i - start
 	}
 	return tokens
@@ -62,12 +98,22 @@ func main() {
 	}
 	defer out.Close()
 
-	tokens := tokenize(string(src))
+	tokens := Text(src).tokenize()
+	w := csv.NewWriter(out)
+	if err := w.Write([]string{"Type", "Value", "Pos"}); err != nil {
+		fmt.Fprintf(os.Stderr, "tokenizer: write: %v\n", err)
+		os.Exit(1)
+	}
 	for _, t := range tokens {
-		if _, err := fmt.Fprintf(out, "%-5s @%-3d %q\n", t.Type, t.Pos, t.Value); err != nil {
+		if err := w.Write([]string{t.Type, t.Value, strconv.Itoa(t.Pos)}); err != nil {
 			fmt.Fprintf(os.Stderr, "tokenizer: write: %v\n", err)
 			os.Exit(1)
 		}
+	}
+	w.Flush()
+	if err := w.Error(); err != nil {
+		fmt.Fprintf(os.Stderr, "tokenizer: write: %v\n", err)
+		os.Exit(1)
 	}
 }
 
