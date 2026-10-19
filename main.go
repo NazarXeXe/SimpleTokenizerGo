@@ -99,12 +99,15 @@ func (s Text) tokenize() []Token {
 				tokens = append(tokens, Token{Type: "word", Value: raw[start:i], Pos: start})
 			} else {
 				// Sign or dot alone (no number follows) -> a symbol.
-				tokens = append(tokens, Token{Type: "symbol", Value: string(c), Pos: i})
+				tokens = append(tokens, Token{Type: "symbol", Value: raw[i : i+1], Pos: i})
 				i++
 			}
 		default:
 			// Every other character is a special symbol on its own.
-			tokens = append(tokens, Token{Type: "symbol", Value: string(c), Pos: i})
+			// Slice the source rather than converting the byte with string(c):
+			// string(byte(0xCF)) yields the two-byte UTF-8 encoding of U+00CF,
+			// which would not match the source text at Pos.
+			tokens = append(tokens, Token{Type: "symbol", Value: raw[i : i+1], Pos: i})
 			i++
 		}
 	}
@@ -116,41 +119,50 @@ func main() {
 
 	in, err := openInput()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "tokenizer: %v\n", err)
-		os.Exit(1)
+		fatal(err)
 	}
 	defer in.Close()
 
 	src, err := io.ReadAll(in)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "tokenizer: read: %v\n", err)
-		os.Exit(1)
+		fatal(fmt.Errorf("read: %w", err))
 	}
 
 	out, err := openOutput()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "tokenizer: %v\n", err)
-		os.Exit(1)
+		fatal(err)
 	}
 	defer out.Close()
 
-	tokens := Text(src).tokenize()
+	if err := writeTokens(out, Text(src).tokenize()); err != nil {
+		fatal(err)
+	}
+}
+
+// fatal reports err on stderr and exits non-zero, in the same
+// "tokenizer: <error>" shape used for every failure path.
+func fatal(err error) {
+	fmt.Fprintf(os.Stderr, "tokenizer: %v\n", err)
+	os.Exit(1)
+}
+
+// writeTokens renders the token table as CSV: a header row followed by one
+// row per token.
+func writeTokens(out io.Writer, tokens []Token) error {
 	w := csv.NewWriter(out)
 	if err := w.Write([]string{"Type", "Value", "Pos"}); err != nil {
-		fmt.Fprintf(os.Stderr, "tokenizer: write: %v\n", err)
-		os.Exit(1)
+		return fmt.Errorf("write: %w", err)
 	}
 	for _, t := range tokens {
 		if err := w.Write([]string{t.Type, t.Value, strconv.Itoa(t.Pos)}); err != nil {
-			fmt.Fprintf(os.Stderr, "tokenizer: write: %v\n", err)
-			os.Exit(1)
+			return fmt.Errorf("write: %w", err)
 		}
 	}
 	w.Flush()
 	if err := w.Error(); err != nil {
-		fmt.Fprintf(os.Stderr, "tokenizer: write: %v\n", err)
-		os.Exit(1)
+		return fmt.Errorf("write: %w", err)
 	}
+	return nil
 }
 
 func openInput() (io.ReadCloser, error) {
